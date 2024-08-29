@@ -9,4 +9,6 @@
 terraform.tfvars
 
 ansible/oci-webserver-config-ansible/group_vars/
-nsible/oci-webserver-config-ansible/group_vars/*
+ansible/oci-webserver-config-ansible/group_vars/*
+ansible/oci-webserver-config-ansible/id_rsa
+ansible/oci-webserver-config-ansible/inventory.yml
