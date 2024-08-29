@@ -400,26 +400,6 @@ resource "oci_load_balancer_backend_set" "openshift_cluster_ingress_http_backend
   policy           = "LEAST_CONNECTIONS"
 }
 
-## Load Balancer Backend Config
-
-# resource "oci_load_balancer_backend" "master-00-http-external" {
-#   backendset_name = oci_load_balancer_backend_set.openshift_cluster_ingress_http_backend.name
-#   ip_address = oci_core_instance.bootstrap-node-master-00.private_ip
-#   load_balancer_id = oci_load_balancer_load_balancer.openshift_api_apps_lb.id
-#   port = 80
-# }
-# resource "oci_load_balancer_backend" "master-01-http-external" {
-#   backendset_name = oci_load_balancer_backend_set.openshift_cluster_ingress_http_backend.name
-#   ip_address = oci_core_instance.master-01.private_ip
-#   load_balancer_id = oci_load_balancer_load_balancer.openshift_api_apps_lb.id
-#   port = 80
-# }
-# resource "oci_load_balancer_backend" "master-02-http-external" {
-#   backendset_name = oci_load_balancer_backend_set.openshift_cluster_ingress_http_backend.name
-#   ip_address = oci_core_instance.master-02.private_ip
-#   load_balancer_id = oci_load_balancer_load_balancer.openshift_api_apps_lb.id
-#   port = 80
-# }
 
 ##  Worker Nodes http load balancer backend config
 resource "oci_load_balancer_backend" "worker-01-http-external" {
@@ -458,28 +438,6 @@ resource "oci_load_balancer_backend_set" "openshift_cluster_ingress_https_backen
   load_balancer_id = oci_load_balancer_load_balancer.openshift_api_apps_lb.id
   policy           = "LEAST_CONNECTIONS"
 }
-
-## TEmp for masters at first install
-
-# resource "oci_load_balancer_backend" "master-00-https-external" {
-#   backendset_name = oci_load_balancer_backend_set.openshift_cluster_ingress_https_backend.name
-#   ip_address = "10.0.16.100"
-#   load_balancer_id = oci_load_balancer_load_balancer.openshift_api_apps_lb.id
-#   port = 443
-# }
-# resource "oci_load_balancer_backend" "master-01-https-external" {
-#   backendset_name = oci_load_balancer_backend_set.openshift_cluster_ingress_https_backend.name
-#   ip_address = "10.0.16.101"
-#   load_balancer_id = oci_load_balancer_load_balancer.openshift_api_apps_lb.id
-#   port = 443
-# }
-# resource "oci_load_balancer_backend" "master-02-https-external" {
-#   backendset_name = oci_load_balancer_backend_set.openshift_cluster_ingress_https_backend.name
-#   ip_address = "10.0.16.102"
-#   load_balancer_id = oci_load_balancer_load_balancer.openshift_api_apps_lb.id
-#   port = 443
-# }
-##
 
 resource "oci_load_balancer_backend" "worker-01-https-external" {
   backendset_name = oci_load_balancer_backend_set.openshift_cluster_ingress_https_backend.name
@@ -1197,20 +1155,49 @@ output "webserver_public_ip" {
   value = module.webserver.webserver_public_ip
 }
 
-# output "oci_ccm_config" {
-#   value = <<OCICCMCONFIG
-# Cluster Dahsboard URL:  https://console-openshift-console.apps.${var.cluster_name}.${var.zone_dns}
-# compartment: ${var.compartment_ocid}
-# vcn: ${oci_core_vcn.openshift_vcn.id}
-# loadBalancer:
-#   subnet1: ${var.enable_private_dns ? oci_core_subnet.private.id : oci_core_subnet.public.id}
-#   securityListManagementMode: Frontend
-#   securityLists:
-#     ${var.enable_private_dns ? oci_core_subnet.private.id : oci_core_subnet.public.id}: ${var.enable_private_dns ? oci_core_security_list.private.id : oci_core_security_list.public.id}
-# rateLimiter:
-#   rateLimitQPSRead: 20.0
-#   rateLimitBucketRead: 5
-#   rateLimitQPSWrite: 20.0
-#   rateLimitBucketWrite: 5
-#   OCICCMCONFIG
-# }
+
+### Temporary load balancer backend sets for masters for inital cluster install.  After first terraform run, comment
+### out lines and rerun terraform apply to delete.
+
+resource "oci_load_balancer_backend" "master-00-http-external" {
+  backendset_name = oci_load_balancer_backend_set.openshift_cluster_ingress_http_backend.name
+  ip_address = oci_core_instance.bootstrap-node-master-00.private_ip
+  load_balancer_id = oci_load_balancer_load_balancer.openshift_api_apps_lb.id
+  port = 80
+}
+
+resource "oci_load_balancer_backend" "master-01-http-external" {
+  backendset_name = oci_load_balancer_backend_set.openshift_cluster_ingress_http_backend.name
+  ip_address = oci_core_instance.master-01.private_ip
+  load_balancer_id = oci_load_balancer_load_balancer.openshift_api_apps_lb.id
+  port = 80
+}
+
+resource "oci_load_balancer_backend" "master-02-http-external" {
+  backendset_name = oci_load_balancer_backend_set.openshift_cluster_ingress_http_backend.name
+  ip_address = oci_core_instance.master-02.private_ip
+  load_balancer_id = oci_load_balancer_load_balancer.openshift_api_apps_lb.id
+  port = 80
+}
+
+resource "oci_load_balancer_backend" "master-00-https-external" {
+  backendset_name = oci_load_balancer_backend_set.openshift_cluster_ingress_https_backend.name
+  ip_address = oci_core_instance.bootstrap-node-master-00.private_ip
+  load_balancer_id = oci_load_balancer_load_balancer.openshift_api_apps_lb.id
+  port = 443
+}
+
+resource "oci_load_balancer_backend" "master-01-https-external" {
+  backendset_name = oci_load_balancer_backend_set.openshift_cluster_ingress_https_backend.name
+  ip_address = oci_core_instance.master-01.private_ip
+  load_balancer_id = oci_load_balancer_load_balancer.openshift_api_apps_lb.id
+  port = 443
+}
+
+resource "oci_load_balancer_backend" "master-02-https-external" {
+  backendset_name = oci_load_balancer_backend_set.openshift_cluster_ingress_https_backend.name
+  ip_address = oci_core_instance.master-02.private_ip
+  load_balancer_id = oci_load_balancer_load_balancer.openshift_api_apps_lb.id
+  port = 443
+}
+##
