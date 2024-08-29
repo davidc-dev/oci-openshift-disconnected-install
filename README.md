@@ -1,0 +1,1 @@
+Terraform / Ansible workflow to setup quick disconnected OCP environment on Oracle Cloud for dev/testing installer

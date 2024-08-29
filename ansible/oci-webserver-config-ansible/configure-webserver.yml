@@ -1,0 +1,9 @@
+### Playbook to configure webservers
+
+- name: Playbook to configure webservesr
+  hosts: webserver
+  remote_user: opc
+
+  roles:
+    - setup-webserver
+    - create-installer-image

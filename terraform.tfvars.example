@@ -1,0 +1,29 @@
+cluster_name                    = "<name for cluster?"
+compartment_ocid                = "<oracle compartment id>"
+tenancy_ocid                    = "<oracle tenant id>"
+region                          = "<oracle cloud region>"
+oci_fingerprint                 = "<oci cli config fingerprint>"
+user_ocid                       = "<oracle user id>"
+compute_count                   = 0
+control_plane_count             = 3
+zone_dns                        = "<zone name for aws route53 public zone>"
+rendezvousIP                    = "<static private IP to use for bootstrap host rendezvousIP"
+aws_region                      = "<aws region>"
+aws_access_key                  = "<aws access key>"
+aws_secret_key                  = "<aws secret key>"
+ocp_version                     = "<ocp version to install>"
+ssh_pub_key                     = "<paste public ssh key for ssh into openshift nodes>"
+pull_secret                     = <<EOL
+<paste pull secret downloaded/copied from red hat website>
+EOL
+## See example format below for adding mirrors and update/change as needed
+mirrors                         = <<EOL
+'{"mirrors": ["quay.io/davclark/oc-mirror/openshift/release"], "source": "quay.io/openshift-release-dev/ocp-v4.0-art-dev" }, {"mirrors": ["quay.io/davclark/oc-mirror/openshift/release-images"], "source": "quay.io/openshift-release-dev/ocp-release"}'
+EOL
+
+webserver_private_key           = <<EOL
+<paste private key used for ssh into webserver here>
+EOL
+oci_config_private_key = <<EOL
+  <paste private key for oracle cli config here, make sure all lines have 2 leading spaces>
+  EOL

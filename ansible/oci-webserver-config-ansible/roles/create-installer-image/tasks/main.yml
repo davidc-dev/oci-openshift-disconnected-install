@@ -1,0 +1,1126 @@
+## Role to create the openshift installer image and copy to oracle block storage bucket
+
+- name: check if already run
+  stat: 
+    path: ~/{{ cluster_name }}/agent.x86_64.iso
+  register: ocp_image_exists
+
+- name: Create cluster install directory
+  ansible.builtin.file:
+    path: "~/{{ cluster_name }}"
+    state: directory
+    mode: '0755'
+  when: ocp_image_exists.stat.exists == False
+
+- name: Convert variable to json string
+  ansible.builtin.set_fact:
+    pull_secret: "{{ pull_secret | to_json }}"
+  when: ocp_image_exists.stat.exists == False
+
+
+- name: Create install-config.yaml file
+  ansible.builtin.copy:
+    dest: "~/{{ cluster_name }}/install-config.json"
+    content: |
+      {
+          "apiVersion": "v1",
+          "baseDomain": "{{ base_domain }}",
+          "metadata": {
+              "name": "{{ cluster_name }}"
+          },
+          "networking": {
+              "clusterNetwork": [
+                  {
+                      "cidr": "10.128.0.0/14",
+                      "hostPrefix": 23
+                  }
+              ],
+              "networkType": "OVNKubernetes",
+              "machineNetwork": [
+                  {
+                      "cidr": "{{ vnet_cidr }}"
+                  }
+              ],
+              "serviceNetwork": [
+                  "172.30.0.0/16"
+              ]
+          },
+          "compute": [
+              {
+                  "architecture": "amd64",
+                  "hyperthreading": "Enabled",
+                  "name": "worker",
+                  "replicas": {{ worker_count }}
+              }
+          ],
+          "controlPlane": {
+              "architecture": "amd64",
+              "hyperthreading": "Enabled",
+              "name": "master",
+              "replicas": {{ master_count }}
+          },
+          "platform": {
+              "external": {
+                  "platformName": "oci",
+                  "cloudControllerManager": "External"
+              }
+          },
+          "sshKey": "{{ ssh_pub_key }}",
+          "pullSecret": "PULLSECRET",
+          "imageContentSources": [{{ mirrors }}]
+      }
+  when: ocp_image_exists.stat.exists == False
+
+- name: Convert install-config.json to yaml 
+  ansible.builtin.shell: |
+    yq -Poy install-config.json > install-config.yaml
+  args:
+    chdir: ~/{{ cluster_name }}
+  when: ocp_image_exists.stat.exists == False
+
+- name: Substitude in pull secret
+  ansible.builtin.shell: |
+    pullsecret={{ pull_secret }} && \
+    sed -i "s/PULLSECRET/'$pullsecret'/g" install-config.yaml
+  args:
+    chdir: ~/{{ cluster_name }}
+  when: ocp_image_exists.stat.exists == False
+
+- name: remove install-config.json
+  ansible.builtin.file:
+    path: "~/{{ cluster_name }}/install-config.json"
+    state: absent
+  when: ocp_image_exists.stat.exists == False
+
+### Create agent-config.yaml
+
+- name: create agent-config.yaml file 
+  ansible.builtin.copy:
+    dest: "~/{{ cluster_name }}/agent-config.yaml"
+    content: |
+      apiVersion: v1beta1
+      kind: AgentConfig
+      metadata:
+        name: {{ cluster_name }}
+      rendezvousIP: {{ rendezvousIP }}
+      bootArtifactsBaseURL: http://{{ webserver_private_ip }}
+  when: ocp_image_exists.stat.exists == False
+
+### Create oracle custom manifests
+
+- name: create openshift directory
+  ansible.builtin.file:
+    path: "~/{{ cluster_name }}/openshift"
+    state: directory
+    mode: '0755'
+  when: ocp_image_exists.stat.exists == False
+
+- name: create oci-ccm.yml
+  ansible.builtin.copy:
+    dest: "~/{{ cluster_name }}/openshift/oci-ccm.yml"
+    content: |
+      # oci-ccm-00-namespace.yaml
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: oci-cloud-controller-manager
+        annotations:
+          workload.openshift.io/allowed: management
+        labels:
+          "pod-security.kubernetes.io/enforce": "privileged"
+          "pod-security.kubernetes.io/audit": "privileged"
+          "pod-security.kubernetes.io/warn": "privileged"
+          "security.openshift.io/scc.podSecurityLabelSync": "false"
+          "openshift.io/run-level": "0"
+          "pod-security.kubernetes.io/enforce-version": "v1.24"
+
+      ---
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: cloud-controller-manager
+        namespace: oci-cloud-controller-manager
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: system:cloud-controller-manager
+        labels:
+          kubernetes.io/cluster-service: "true"
+      rules:
+      - apiGroups:
+        - ""
+        resources:
+        - nodes
+        verbs:
+        - '*'
+
+      - apiGroups:
+        - ""
+        resources:
+        - nodes/status
+        verbs:
+        - patch
+
+      - apiGroups:
+        - ""
+        resources:
+        - services
+        verbs:
+        - list
+        - watch
+        - patch
+        - get
+
+      - apiGroups:
+        - ""
+        resources:
+        - services/status
+        verbs:
+        - patch
+        - get
+        - update
+
+      - apiGroups:
+          - ""
+        resources:
+          - configmaps
+        resourceNames:
+          - "extension-apiserver-authentication"
+        verbs:
+          - get
+
+      - apiGroups:
+        - ""
+        resources:
+        - events
+        verbs:
+        - list
+        - watch
+        - create
+        - patch
+        - update
+
+      # For leader election
+      - apiGroups:
+        - ""
+        resources:
+        - endpoints
+        verbs:
+        - create
+
+      - apiGroups:
+        - ""
+        resources:
+        - endpoints
+        resourceNames:
+        - "cloud-controller-manager"
+        verbs:
+        - get
+        - list
+        - watch
+        - update
+
+      - apiGroups:
+        - ""
+        resources:
+        - configmaps
+        verbs:
+        - create
+
+      - apiGroups:
+          - "coordination.k8s.io"
+        resources:
+          - leases
+        verbs:
+          - get
+          - create
+          - update
+          - delete
+          - patch
+          - watch
+
+      - apiGroups:
+        - ""
+        resources:
+        - configmaps
+        resourceNames:
+        - "cloud-controller-manager"
+        verbs:
+        - get
+        - update
+
+      - apiGroups:
+          - ""
+        resources:
+          - configmaps
+        resourceNames:
+          - "extension-apiserver-authentication"
+        verbs:
+          - get
+          - list
+          - watch
+
+      - apiGroups:
+        - ""
+        resources:
+        - serviceaccounts
+        verbs:
+        - create
+        - list
+        - get
+        - watch
+      - apiGroups:
+        - ""
+        resources:
+        - secrets
+        verbs:
+        - get
+        - list
+
+      # For the PVL
+      - apiGroups:
+        - ""
+        resources:
+        - persistentvolumes
+        verbs:
+        - list
+        - watch
+        - patch
+      ---
+      kind: ClusterRoleBinding
+      apiVersion: rbac.authorization.k8s.io/v1
+      metadata:
+        name: oci-cloud-controller-manager
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: system:cloud-controller-manager
+      subjects:
+      - kind: ServiceAccount
+        name: cloud-controller-manager
+        namespace: oci-cloud-controller-manager
+
+      ---
+
+      # oci-ccm-04-cloud-controller-manager-config.yaml
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        creationTimestamp: null
+        name: oci-cloud-controller-manager
+        namespace: oci-cloud-controller-manager
+      stringData:
+        cloud-provider.yaml: |
+          useInstancePrincipals: true
+          compartment: {{ compartment_ocid }}
+          vcn: {{ vcn_ocid }}
+          loadBalancer:
+            subnet1: {{ load_balancer_subnet_ocid }}
+            securityListManagementMode: Frontend
+            securityLists:
+              {{ load_balancer_subnet_ocid }}: {{ load_balancer_security_list_ocid }}
+          rateLimiter:
+            rateLimitQPSRead: 20.0
+            rateLimitBucketRead: 5
+            rateLimitQPSWrite: 20.0
+            rateLimitBucketWrite: 5
+        config.yaml: |
+          useInstancePrincipals: true
+          compartment: {{ compartment_ocid }}
+          vcn: {{ vcn_ocid }}
+          loadBalancer:
+            subnet1: {{ load_balancer_subnet_ocid }}
+            securityListManagementMode: Frontend
+            securityLists:
+              {{ load_balancer_subnet_ocid }}: {{ load_balancer_security_list_ocid }}
+          rateLimiter:
+            rateLimitQPSRead: 20.0
+            rateLimitBucketRead: 5
+            rateLimitQPSWrite: 20.0
+            rateLimitBucketWrite: 5
+
+      ---
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        name: oci-cloud-controller-manager
+        namespace: oci-cloud-controller-manager
+        labels:
+          k8s-app: oci-cloud-controller-manager
+      spec:
+        selector:
+          matchLabels:
+            component: oci-cloud-controller-manager
+            tier: control-plane
+        updateStrategy:
+          type: RollingUpdate
+        template:
+          metadata:
+            labels:
+              component: oci-cloud-controller-manager
+              tier: control-plane
+          spec:
+            serviceAccountName: cloud-controller-manager
+            hostNetwork: true
+            nodeSelector:
+              node-role.kubernetes.io/control-plane: ""
+            priorityClassName: system-cluster-critical
+            tolerations:
+            - key: CriticalAddonsOnly
+              operator: Exists
+            - key: node.cloudprovider.kubernetes.io/uninitialized
+              value: "true"
+              effect: NoSchedule
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+            - key: node-role.kubernetes.io/master
+              operator: Exists
+              effect: NoSchedule
+            - key: node.kubernetes.io/not-ready
+              operator: Exists
+              effect: NoSchedule
+            volumes:
+              - name: cfg
+                secret:
+                  secretName: oci-cloud-controller-manager
+              - name: kubernetes
+                hostPath:
+                  path: /etc/kubernetes
+            containers:
+              - name: oci-cloud-controller-manager
+                image: ghcr.io/oracle/cloud-provider-oci:v1.29.0
+                command:
+                  - /bin/bash
+                  - -c
+                  - |
+                    #!/bin/bash
+                    set -o allexport
+                    if [[ -f /etc/kubernetes/apiserver-url.env ]]; then
+                      source /etc/kubernetes/apiserver-url.env
+                    fi
+                    exec /usr/local/bin/oci-cloud-controller-manager --cloud-config=/etc/oci/cloud-provider.yaml --cloud-provider=oci --leader-elect-resource-lock=leases --v=3
+                volumeMounts:
+                  - name: cfg
+                    mountPath: /etc/oci
+                    readOnly: true
+                  - name: kubernetes
+                    mountPath: /etc/kubernetes
+                    readOnly: true
+  when: ocp_image_exists.stat.exists == False
+
+- name: create oci-csi.yml
+  ansible.builtin.copy:
+    dest: "~/{{ cluster_name }}/openshift/oci-csi.yml"
+    content: |
+      # oci-csi-00-namespace.yaml
+      ---
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: oci-csi
+        annotations:
+          workload.openshift.io/allowed: management
+        labels:
+          "pod-security.kubernetes.io/enforce": "privileged"
+          "pod-security.kubernetes.io/audit": "privileged"
+          "pod-security.kubernetes.io/warn": "privileged"
+          "security.openshift.io/scc.podSecurityLabelSync": "false"
+          "openshift.io/run-level": "0"
+          "pod-security.kubernetes.io/enforce-version": "v1.24"
+
+      ---
+
+      # oci-csi-01-config.yaml
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        creationTimestamp: null
+        name: oci-volume-provisioner
+        namespace: oci-csi
+      stringData:
+        cloud-provider.yaml: |
+          useInstancePrincipals: true
+          compartment: {{ compartment_ocid }}
+          vcn: {{ vcn_ocid }}
+          loadBalancer:
+            subnet1: {{ load_balancer_subnet_ocid }}
+            securityListManagementMode: Frontend
+            securityLists:
+              {{ load_balancer_subnet_ocid }}: {{ load_balancer_security_list_ocid }}
+          rateLimiter:
+            rateLimitQPSRead: 20.0
+            rateLimitBucketRead: 5
+            rateLimitQPSWrite: 20.0
+            rateLimitBucketWrite: 5
+        config.yaml: |
+          useInstancePrincipals: true
+          compartment: {{ compartment_ocid }}
+          vcn: {{ vcn_ocid }}
+          loadBalancer:
+            subnet1: {{ load_balancer_subnet_ocid }}
+            securityListManagementMode: Frontend
+            securityLists:
+              {{ load_balancer_subnet_ocid }}: {{ load_balancer_security_list_ocid }}
+          rateLimiter:
+            rateLimitQPSRead: 20.0
+            rateLimitBucketRead: 5
+            rateLimitQPSWrite: 20.0
+            rateLimitBucketWrite: 5
+      ---
+
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        annotations:
+          deprecated.daemonset.template.generation: "1"
+        generation: 1
+        name: csi-oci-controller
+        namespace: oci-csi
+      spec:
+        revisionHistoryLimit: 10
+        selector:
+          matchLabels:
+            app: csi-oci-controller
+        template:
+          metadata:
+            creationTimestamp: null
+            labels:
+              app: csi-oci-controller
+              role: csi-oci
+          spec:
+            nodeSelector:
+              node-role.kubernetes.io/control-plane: ""
+            containers:
+              - name: csi-volume-provisioner
+                image: registry.k8s.io/sig-storage/csi-provisioner:v5.0.1
+                args:
+                  - --csi-address=/var/run/shared-tmpfs/csi.sock
+                  - --volume-name-prefix=csi
+                  - --feature-gates=Topology=true
+                  - --timeout=120s
+                  - --leader-election
+                  - --leader-election-namespace=oci-csi
+                volumeMounts:
+                  - name: config
+                    mountPath: /etc/oci/
+                    readOnly: true
+                  - mountPath: /var/run/shared-tmpfs
+                    name: shared-tmpfs
+              - name: csi-fss-volume-provisioner
+                image: registry.k8s.io/sig-storage/csi-provisioner:v5.0.1
+                args:
+                  - --csi-address=/var/run/shared-tmpfs/csi-fss.sock
+                  - --volume-name-prefix=csi-fss
+                  - --feature-gates=Topology=true
+                  - --timeout=120s
+                  - --leader-election
+                  - --leader-election-namespace=oci-csi
+                volumeMounts:
+                  - name: config
+                    mountPath: /etc/oci/
+                    readOnly: true
+                  - mountPath: /var/run/shared-tmpfs
+                    name: shared-tmpfs
+              - name: csi-attacher
+                image: registry.k8s.io/sig-storage/csi-attacher:v4.6.1
+                args:
+                  - --csi-address=/var/run/shared-tmpfs/csi.sock
+                  - --timeout=120s
+                  - --leader-election=true
+                  - --leader-election-namespace=oci-csi
+                volumeMounts:
+                  - name: config
+                    mountPath: /etc/oci/
+                    readOnly: true
+                  - mountPath: /var/run/shared-tmpfs
+                    name: shared-tmpfs
+              - name: csi-resizer
+                image: registry.k8s.io/sig-storage/csi-resizer:v1.11.1
+                args:
+                  - --csi-address=/var/run/shared-tmpfs/csi.sock
+                  - --leader-election
+                imagePullPolicy: "IfNotPresent"
+                volumeMounts:
+                  - mountPath: /var/run/shared-tmpfs
+                    name: shared-tmpfs
+              - name: snapshot-controller
+                image: registry.k8s.io/sig-storage/snapshot-controller:v6.2.0
+                args:
+                  - --leader-election
+                imagePullPolicy: "IfNotPresent"
+                volumeMounts:
+                  - mountPath: /var/run/shared-tmpfs
+                    name: shared-tmpfs
+              - name: csi-snapshotter
+                image: registry.k8s.io/sig-storage/csi-snapshotter:v6.2.0
+                args:
+                  - --csi-address=/var/run/shared-tmpfs/csi.sock
+                  - --leader-election
+                imagePullPolicy: "IfNotPresent"
+                volumeMounts:
+                  - mountPath: /var/run/shared-tmpfs
+                    name: shared-tmpfs
+              - name: oci-csi-controller-driver
+                args:
+                  - --endpoint=unix://var/run/shared-tmpfs/csi.sock
+                  - --fss-csi-endpoint=unix://var/run/shared-tmpfs/csi-fss.sock
+                command:
+                  - /usr/local/bin/oci-csi-controller-driver
+                image: ghcr.io/oracle/cloud-provider-oci:v1.29.0
+                imagePullPolicy: IfNotPresent
+                volumeMounts:
+                  - name: config
+                    mountPath: /etc/oci/
+                    readOnly: true
+                  - name: kubernetes
+                    mountPath: /etc/kubernetes
+                    readOnly: true
+                  - mountPath: /var/run/shared-tmpfs
+                    name: shared-tmpfs
+            volumes:
+              - name: config
+                secret:
+                  secretName: oci-volume-provisioner
+              - name: kubernetes
+                hostPath:
+                  path: /etc/kubernetes
+              - name: shared-tmpfs
+                emptyDir: {}
+            dnsPolicy: ClusterFirst
+            hostNetwork: true
+            imagePullSecrets:
+              - name: image-pull-secret
+            restartPolicy: Always
+            schedulerName: default-scheduler
+            serviceAccount: csi-oci-node-sa
+            serviceAccountName: csi-oci-node-sa
+            terminationGracePeriodSeconds: 30
+            tolerations:
+              - operator: Exists
+
+      ---
+
+      apiVersion: storage.k8s.io/v1
+      kind: CSIDriver
+      metadata:
+        name: fss.csi.oraclecloud.com
+      spec:
+        attachRequired: false
+        podInfoOnMount: false
+      ---
+      apiVersion: storage.k8s.io/v1
+      kind: CSIDriver
+      metadata:
+        name: blockvolume.csi.oraclecloud.com
+      spec:
+        fsGroupPolicy: File
+      ---
+      kind: ConfigMap
+      apiVersion: v1
+      metadata:
+        name: oci-csi-iscsiadm
+        namespace: oci-csi
+      data:
+        iscsiadm: |
+          #!/bin/sh
+          if [ -x /host/sbin/iscsiadm ]; then
+            chroot /host /sbin/iscsiadm "$@"
+          elif [ -x /host/usr/local/sbin/iscsiadm ]; then
+            chroot /host /usr/local/sbin/iscsiadm "$@"
+          elif [ -x /host/bin/iscsiadm ]; then
+            chroot /host /bin/iscsiadm "$@"
+          elif [ -x /host/usr/local/bin/iscsiadm ]; then
+            chroot /host /usr/local/bin/iscsiadm "$@"
+          else
+            chroot /host iscsiadm "$@"
+          fi
+      ---
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: oci-fss-csi
+        namespace: oci-csi
+      data:
+        mount: |-
+          #!/bin/sh
+          if [ -x /sbin/mount ]; then
+          chroot /host mount "$@"
+          elif [ -x /usr/local/sbin/mount ]; then
+          chroot /host mount "$@"
+          elif [ -x /usr/sbin/mount ]; then
+          chroot /host mount "$@"
+          elif [ -x /usr/local/bin/mount ]; then
+          chroot /host mount "$@"
+          else
+          chroot /host mount "$@"
+          fi
+        umount: |-
+          #!/bin/sh
+          if [ -x /sbin/umount ]; then
+          chroot /host umount "$@"
+          elif [ -x /usr/local/sbin/umount ]; then
+          chroot /host umount "$@"
+          elif [ -x /usr/sbin/umount ]; then
+          chroot /host umount "$@"
+          elif [ -x /usr/local/bin/umount ]; then
+          chroot /host umount "$@"
+          else
+          chroot /host umount "$@"
+          fi
+        umount.oci-fss: |-
+          #!/bin/sh
+          if [ -x /sbin/umount-oci-fss ]; then
+          chroot /host umount.oci-fss "$@"
+          elif [ -x /usr/local/sbin/umount-oci-fss ]; then
+          chroot /host umount.oci-fss "$@"
+          elif [ -x /usr/sbin/umount-oci-fss ]; then
+          chroot /host umount.oci-fss "$@"
+          elif [ -x /usr/local/bin/umount-oci-fss ]; then
+          chroot /host umount.oci-fss "$@"
+          else
+          chroot /host umount.oci-fss "$@"
+          fi
+      ---
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        annotations:
+          deprecated.daemonset.template.generation: "1"
+        generation: 1
+        name: csi-oci-node
+        namespace: oci-csi
+      spec:
+        revisionHistoryLimit: 10
+        selector:
+          matchLabels:
+            app: csi-oci-node
+        template:
+          metadata:
+            creationTimestamp: null
+            labels:
+              app: csi-oci-node
+              role: csi-oci
+          spec:
+            nodeSelector:
+              node-role.kubernetes.io/worker: ""
+            containers:
+              - name: oci-csi-node-driver
+                args:
+                  - --v=2
+                  - --endpoint=unix:///csi/csi.sock
+                  - --nodeid=$(KUBE_NODE_NAME)
+                  - --loglevel=debug
+                  - --fss-endpoint=unix:///fss/csi.sock
+                command:
+                  - /usr/local/bin/oci-csi-node-driver
+                env:
+                  - name: KUBE_NODE_NAME
+                    valueFrom:
+                      fieldRef:
+                        apiVersion: v1
+                        fieldPath: spec.nodeName
+                  - name: PATH
+                    value: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/host/usr/bin:/host/sbin
+                image: ghcr.io/oracle/cloud-provider-oci:v1.29.0
+                securityContext:
+                  privileged: true
+                volumeMounts:
+                  - mountPath: /csi
+                    name: plugin-dir
+                  - mountPath: /fss
+                    name: fss-plugin-dir
+                  - mountPath: /var/lib/kubelet
+                    mountPropagation: Bidirectional
+                    name: pods-mount-dir
+                  - mountPath: /dev
+                    name: device-dir
+                  - mountPath: /host
+                    mountPropagation: HostToContainer
+                    name: host-root
+                  - mountPath: /sbin/iscsiadm
+                    name: chroot-iscsiadm
+                    subPath: iscsiadm
+                  - mountPath: /host/var/lib/kubelet
+                    mountPropagation: Bidirectional
+                    name: encrypt-pods-mount-dir
+                  - mountPath: /sbin/umount.oci-fss
+                    name: fss-driver-mounts
+                    subPath: umount.oci-fss
+                  - mountPath: /sbin/umount
+                    name: fss-driver-mounts
+                    subPath: umount
+                  - mountPath: /sbin/mount
+                    name: fss-driver-mounts
+                    subPath: mount
+              - name: csi-node-registrar
+                args:
+                  - --csi-address=/csi/csi.sock
+                  - --kubelet-registration-path=/var/lib/kubelet/plugins/blockvolume.csi.oraclecloud.com/csi.sock
+                image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.5.1
+                securityContext:
+                  privileged: true
+                lifecycle:
+                  preStop:
+                    exec:
+                      command:
+                        - /bin/sh
+                        - -c
+                        - rm -rf /registration/blockvolume.csi.oraclecloud.com /registration/blockvolume.csi.oraclecloud.com-reg.sock
+                volumeMounts:
+                  - mountPath: /csi
+                    name: plugin-dir
+                  - mountPath: /registration
+                    name: registration-dir
+              - name: csi-node-registrar-fss
+                args:
+                  - --csi-address=/fss/csi.sock
+                  - --kubelet-registration-path=/var/lib/kubelet/plugins/fss.csi.oraclecloud.com/csi.sock
+                image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.5.0
+                securityContext:
+                  privileged: true
+                lifecycle:
+                  preStop:
+                    exec:
+                      command:
+                        - /bin/sh
+                        - -c
+                        - rm -rf /registration/fss.csi.oraclecloud.com /registration/fss.csi.oraclecloud.com-reg.sock
+                volumeMounts:
+                  - mountPath: /fss
+                    name: fss-plugin-dir
+                  - mountPath: /registration
+                    name: registration-dir
+            dnsPolicy: ClusterFirst
+            hostNetwork: true
+            restartPolicy: Always
+            schedulerName: default-scheduler
+            serviceAccount: csi-oci-node-sa
+            serviceAccountName: csi-oci-node-sa
+            terminationGracePeriodSeconds: 30
+            tolerations:
+              - operator: Exists
+            volumes:
+              - hostPath:
+                  path: /var/lib/kubelet/plugins_registry/
+                  type: DirectoryOrCreate
+                name: registration-dir
+              - hostPath:
+                  path: /var/lib/kubelet/plugins/blockvolume.csi.oraclecloud.com
+                  type: DirectoryOrCreate
+                name: plugin-dir
+              - hostPath:
+                  path: /var/lib/kubelet/plugins/fss.csi.oraclecloud.com
+                  type: DirectoryOrCreate
+                name: fss-plugin-dir
+              - hostPath:
+                  path: /var/lib/kubelet
+                  type: Directory
+                name: pods-mount-dir
+              - hostPath:
+                  path: /var/lib/kubelet
+                  type: Directory
+                name: encrypt-pods-mount-dir
+              - hostPath:
+                  path: /dev
+                  type: ""
+                name: device-dir
+              - hostPath:
+                  path: /
+                  type: Directory
+                name: host-root
+              - configMap:
+                  name: oci-csi-iscsiadm
+                  defaultMode: 0755
+                name: chroot-iscsiadm
+              - configMap:
+                  name: oci-fss-csi
+                  defaultMode: 0755
+                name: fss-driver-mounts
+        updateStrategy:
+          rollingUpdate:
+            maxUnavailable: 1
+          type: RollingUpdate
+
+      ---
+
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: csi-oci-node-sa
+        namespace: oci-csi
+      ---
+
+      kind: ClusterRole
+      apiVersion: rbac.authorization.k8s.io/v1
+      metadata:
+        name: csi-oci
+        namespace: oci-csi
+      rules:
+        - apiGroups: [""]
+          resources: ["events"]
+          verbs: ["get", "list", "watch", "create", "update", "patch"]
+        - apiGroups: [""]
+          resources: ["nodes"]
+          verbs: ["get", "list", "watch"]
+        - apiGroups: ["volume.oci.oracle.com"]
+          resources: ["blockscsiinfos"]
+          verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
+        - apiGroups: [""]
+          resources: ["persistentvolumes"]
+          verbs: ["get", "list", "watch", "create", "delete", "patch"]
+        - apiGroups: [""]
+          resources: ["persistentvolumeclaims"]
+          verbs: ["get", "list", "watch", "update", "create"]
+        - apiGroups: ["storage.k8s.io"]
+          resources: ["storageclasses", "volumeattachments", "volumeattachments/status", "csinodes"]
+          verbs: ["get", "list", "watch", "patch"]
+        - apiGroups: ["coordination.k8s.io"]
+          resources: ["leases"]
+          verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
+        - apiGroups: [""]
+          resources: ["endpoints"]
+          verbs: ["get", "watch", "create", "update"]
+        - apiGroups: [""]
+          resources: ["pods"]
+          verbs: ["get", "list", "watch"]
+        - apiGroups: [""]
+          resources: ["persistentvolumeclaims/status"]
+          verbs: ["patch"]
+        - apiGroups: [ "snapshot.storage.k8s.io" ]
+          resources: [ "volumesnapshotclasses" ]
+          verbs: [ "get", "list", "watch" ]
+        - apiGroups: [ "snapshot.storage.k8s.io" ]
+          resources: [ "volumesnapshotcontents" ]
+          verbs: [ "create", "get", "list", "watch", "update", "delete", "patch" ]
+        - apiGroups: [ "snapshot.storage.k8s.io" ]
+          resources: [ "volumesnapshotcontents/status" ]
+          verbs: [ "update", "patch" ]
+        - apiGroups: [ "snapshot.storage.k8s.io" ]
+          resources: [ "volumesnapshots" ]
+          verbs: [ "get", "list", "watch", "update", "patch" ]
+        - apiGroups: [ "snapshot.storage.k8s.io" ]
+          resources: [ "volumesnapshots/status" ]
+          verbs: [ "update", "patch" ]
+      ---
+
+      kind: ClusterRoleBinding
+      apiVersion: rbac.authorization.k8s.io/v1
+      metadata:
+        name: csi-oci-binding
+      subjects:
+        - kind: ServiceAccount
+          name: csi-oci-node-sa
+          namespace: oci-csi
+      roleRef:
+        kind: ClusterRole
+        name: csi-oci
+        apiGroup: rbac.authorization.k8s.io
+
+      ---
+      apiVersion: storage.k8s.io/v1
+      kind: StorageClass
+      metadata:
+        name: oci-bv
+      provisioner: blockvolume.csi.oraclecloud.com
+      volumeBindingMode: WaitForFirstConsumer
+      allowVolumeExpansion: true
+      reclaimPolicy: Delete
+      ---
+      apiVersion: storage.k8s.io/v1
+      kind: StorageClass
+      metadata:
+        name: oci-bv-encrypted
+      provisioner: blockvolume.csi.oraclecloud.com
+      parameters:
+        attachment-type: "paravirtualized"
+      reclaimPolicy: Delete
+      volumeBindingMode: WaitForFirstConsumer
+      allowVolumeExpansion: true
+  when: ocp_image_exists.stat.exists == False
+
+- name: create machineconfig-ccm.yml
+  ansible.builtin.copy:
+    dest: "~/{{ cluster_name }}/openshift/machineconfig-ccm.yml"
+    content: |
+      # 99_openshift-machineconfig_00-master-kubelet-providerid.yaml
+      # Generated by Butane; do not edit
+      apiVersion: machineconfiguration.openshift.io/v1
+      kind: MachineConfig
+      metadata:
+        labels:
+          machineconfiguration.openshift.io/role: master
+        name: 00-master-oci-kubelet-providerid
+      spec:
+        config:
+          ignition:
+            version: 3.2.0
+          storage:
+            files:
+              - contents:
+                  compression: gzip
+                  source: data:;base64,H4sIAAAAAAAC/1yPUYvaQBCA3/dXTFMf2odkrbSFWlNQE2moJEW9exGRdTO5DBd3w+4YvBP/+yF6IPf0zcPMxzefP8kdGblTvhYeGUKE0EJLLVaKGiHyIkmnRT6LJbKW/sUz7ssb5fNhhw1y5NF1pDEq5aAfWk1h62xHJToqI21NJQRVsL64g97p3XgOYPMbuEYjAABQ1xaC3DI4bBulyTwBHsnzZbi/um4fiaEvKhJZvlyN82m6zZK490UfXAPhXwjGB66to1fFZM0QJqgcOiic0g0GEPo51MztUMpvP39Fgx/foxulbbXsBpKMZ2U0Siq/CqEVw58P8aNRWszEenn9fSNS05GzZo+G4+DfwySdp6vt/0XxmCXpIktiq2koZe90F3wOxMXxFgAA///yWfIkhAEAAA==
+                mode: 493
+                path: /usr/local/bin/oci-kubelet-providerid
+          systemd:
+            units:
+              - contents: |
+                  [Unit]
+                  Description=Fetch kubelet provider id from OCI Metadata
+
+                  # Wait for NetworkManager to report it's online
+                  After=NetworkManager-wait-online.service
+                  # Run before kubelet
+                  Before=kubelet.service
+
+                  [Service]
+                  ExecStart=/usr/local/bin/oci-kubelet-providerid
+                  Type=oneshot
+
+                  [Install]
+                  WantedBy=network-online.target
+                enabled: true
+                name: oci-kubelet-providerid.service
+              - contents: |
+                  [Unit]
+                  Description=OCI hostname agent
+                  Wants=network-online.target
+                  After=network-online.target
+
+                  [Service]
+                  Type=oneshot
+                  ExecStart=/usr/bin/bash -c 'OCIHOSTNAME=$(curl -H \"Authorization: Bearer Oracle\" -L http://169.254.169.254/opc/v2/instance/ --retry 10 | jq -r '.displayName') && echo \"$OCIHOSTNAME\" > /etc/hostname'
+
+                  [Install]
+                  WantedBy=multi-user.target
+                enabled: true
+                name: oci-hostname-update.service
+
+      ---
+
+      # 99_openshift-machineconfig_00-worker-kubelet-providerid.yaml
+      # Generated by Butane; do not edit
+      apiVersion: machineconfiguration.openshift.io/v1
+      kind: MachineConfig
+      metadata:
+        labels:
+          machineconfiguration.openshift.io/role: worker
+        name: 00-worker-oci-kubelet-providerid
+      spec:
+        config:
+          ignition:
+            version: 3.2.0
+          storage:
+            files:
+              - contents:
+                  compression: gzip
+                  source: data:;base64,H4sIAAAAAAAC/1yPUYvaQBCA3/dXTFMf2odkrbSFWlNQE2moJEW9exGRdTO5DBd3w+4YvBP/+yF6IPf0zcPMxzefP8kdGblTvhYeGUKE0EJLLVaKGiHyIkmnRT6LJbKW/sUz7ssb5fNhhw1y5NF1pDEq5aAfWk1h62xHJToqI21NJQRVsL64g97p3XgOYPMbuEYjAABQ1xaC3DI4bBulyTwBHsnzZbi/um4fiaEvKhJZvlyN82m6zZK490UfXAPhXwjGB66to1fFZM0QJqgcOiic0g0GEPo51MztUMpvP39Fgx/foxulbbXsBpKMZ2U0Siq/CqEVw58P8aNRWszEenn9fSNS05GzZo+G4+DfwySdp6vt/0XxmCXpIktiq2koZe90F3wOxMXxFgAA///yWfIkhAEAAA==
+                mode: 493
+                path: /usr/local/bin/oci-kubelet-providerid
+          systemd:
+            units:
+              - contents: |
+                  [Unit]
+                  Description=Fetch kubelet provider id from OCI Metadata
+
+                  # Wait for NetworkManager to report it's online
+                  After=NetworkManager-wait-online.service
+                  # Run before kubelet
+                  Before=kubelet.service
+
+                  [Service]
+                  ExecStart=/usr/local/bin/oci-kubelet-providerid
+                  Type=oneshot
+
+                  [Install]
+                  WantedBy=network-online.target
+                enabled: true
+                name: oci-kubelet-providerid.service
+              - contents: |
+                  [Unit]
+                  Description=OCI hostname agent
+                  Wants=network-online.target
+                  After=network-online.target
+
+                  [Service]
+                  Type=oneshot
+                  ExecStart=/usr/bin/bash -c 'OCIHOSTNAME=$(curl -H \"Authorization: Bearer Oracle\" -L http://169.254.169.254/opc/v2/instance/ --retry 10 | jq -r '.displayName') && echo \"$OCIHOSTNAME\" > /etc/hostname'
+
+                  [Install]
+                  WantedBy=multi-user.target
+                enabled: true
+                name: oci-hostname-update.service
+
+      ---
+  when: ocp_image_exists.stat.exists == False
+
+
+- name: create machineconfig-csi.yml
+  ansible.builtin.copy:
+    dest: "~/{{ cluster_name }}/openshift/machineconfig-csi.yml"
+    content: |
+      # 99_openshift-machineconfig_00-master-iscsi-service.yaml
+      apiVersion: machineconfiguration.openshift.io/v1
+      kind: MachineConfig
+      metadata:
+        labels:
+          machineconfiguration.openshift.io/role: master
+        name: 99-master-iscsid
+      spec:
+        config:
+          ignition:
+            version: 3.1.0
+          systemd:
+            units:
+            - enabled: true
+              name: iscsid.service
+
+      ---
+
+      # 99_openshift-machineconfig_00-worker-iscsi-service.yaml
+      apiVersion: machineconfiguration.openshift.io/v1
+      kind: MachineConfig
+      metadata:
+        labels:
+          machineconfiguration.openshift.io/role: worker
+        name: 99-worker-iscsid
+      spec:
+        config:
+          ignition:
+            version: 3.1.0
+          systemd:
+            units:
+            - enabled: true
+              name: iscsid.service
+
+      ---
+  when: ocp_image_exists.stat.exists == False
+
+## Run openshift installer to create image
+
+- name: Run openshift install create image command
+  ansible.builtin.shell: |
+    openshift-install agent create --dir ~/{{ cluster_name }} image
+  when: ocp_image_exists.stat.exists == False
+
+## Check if rootfs exists in webserver directory
+- name: check if rootfs exists in webserver directory
+  stat: 
+    path: /var/www/html/agent.x86_64-rootfs.img
+  register: ocp_rootfs_exists
+
+## Copy rootfs to web server serving directory
+- name: copy rootfs image to webserver directory
+  ansible.builtin.copy:
+    src: /home/opc/{{ cluster_name }}/boot-artifacts/agent.x86_64-rootfs.img
+    dest: /var/www/html/agent.x86_64-rootfs.img
+    remote_src: yes
+  become: true
+  when: ocp_rootfs_exists.stat.exists == False
+
+##  Copy installer image to Oracle Blob bucket
+- name: Copy ocp installer iso to Oracle Blob bucket
+  ansible.builtin.shell: |
+    oci os object put --bucket-name {{ oci_bucket_name }} --file ~/{{ cluster_name }}/agent.x86_64.iso  
+  when: ocp_image_exists.stat.exists == False

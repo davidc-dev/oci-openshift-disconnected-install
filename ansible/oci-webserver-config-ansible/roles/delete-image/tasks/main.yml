@@ -1,0 +1,8 @@
+##  Copy installer image to Oracle Blob bucket
+- name: Delete ocp installer iso from Oracle Blob bucket
+  ansible.builtin.shell: |
+    oci os object delete --force --bucket-name {{ oci_bucket_name }} --object-name agent.x86_64.iso  
+
+- name: Delete ocp installer iso from Oracle Blob bucket
+  ansible.builtin.shell: |
+    oci os object delete --force --bucket-name {{ oci_bucket_name }} --object-name coreos-rawdisk.raw

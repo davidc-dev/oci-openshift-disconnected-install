@@ -1,0 +1,6 @@
+- name: Playbook to cleanup environment on terraform delete
+  hosts: webserver
+  remote_user: opc
+
+  roles:
+    - delete-image

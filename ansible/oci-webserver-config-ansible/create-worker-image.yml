@@ -1,0 +1,8 @@
+- name: Playbook to cleanup environment on terraform delete
+  hosts: webserver
+  remote_user: opc
+  collections:
+    - ansible.posix
+    - community.general
+  roles:
+    - create-worker-image

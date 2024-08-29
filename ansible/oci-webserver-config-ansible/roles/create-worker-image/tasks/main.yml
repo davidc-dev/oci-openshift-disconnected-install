@@ -1,0 +1,100 @@
+- name: Ensure kube directory exists
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/.kube"
+    state: directory
+
+- name: ansible.builtin. kubeconfig from cluster install directory
+  ansible.builtin.copy:
+    src: "{{ ansible_env.HOME }}/{{ cluster_name }}/auth/kubeconfig"
+    dest: "{{ ansible_env.HOME }}/.kube/config"
+    remote_src: true   
+
+- name: Extract worker.ign file
+  ansible.builtin.shell: |
+    oc extract -n openshift-machine-api secret/worker-user-data --keys=userData --to=-
+  register: worker_ign
+
+- name: Create worker.ign file
+  ansible.builtin.copy:
+    content: "{{ worker_ign.stdout }}"
+    dest: "/var/www/html/worker.ign"
+  become: True
+
+## Check if coreos-rawdisk.raw exists
+- name: check if coreos-rawdisk.raw exists
+  stat: 
+    path: /tmp/coreos-rawdisk.raw
+  register: coreos_raw_exists
+
+- name: Get raw disk path from OpenShift configmap
+  ansible.builtin.shell: |
+    oc -n openshift-machine-config-operator get configmap/coreos-bootimages -o jsonpath='{.data.stream}' | jq -r '.architectures.x86_64.artifacts.metal.formats."raw.gz".disk.location'
+  register: disk_path_raw
+  when: coreos_raw_exists.stat.exists == False
+
+- name: Parse raw disk path
+  set_fact:
+    raw_disk_path: "{{ disk_path_raw.stdout }}"
+  when: coreos_raw_exists.stat.exists == False
+
+- name: Download CoreOS raw disk image
+  ansible.builtin.get_url:
+    url: "{{ raw_disk_path }}"
+    dest: /tmp/coreos-rawdisk.raw.gz
+  when: coreos_raw_exists.stat.exists == False
+
+- name: Gunzip CoreOS raw disk image
+  ansible.builtin.shell: |
+    gunzip /tmp/coreos-rawdisk.raw.gz
+  when: coreos_raw_exists.stat.exists == False
+
+- name: Setup loop device
+  ansible.builtin.shell: |
+    sudo losetup --find --partscan --show /tmp/coreos-rawdisk.raw
+  register: loop_device
+  when: coreos_raw_exists.stat.exists == False
+
+
+- name: Create mount directory
+  ansible.builtin.file:
+    path: /mnt/coreos-raw
+    state: directory
+  become: True
+  when: coreos_raw_exists.stat.exists == False
+
+- name: Mount raw disk
+  ansible.posix.mount:
+    path: /mnt/coreos-raw
+    src: "{{ loop_device.stdout }}p3"
+    fstype: auto
+    opts: loop
+    state: mounted
+  become: True
+  when: coreos_raw_exists.stat.exists == False
+
+- name: Modify ostree config with ignition URL
+  ansible.builtin.shell: |
+    sudo sed -i "s|metal|metal $IGNITION|g" /mnt/coreos-raw/loader/entries/ostree-1-rhcos.conf
+  environment: 
+    IGNITION: "ignition.config.url=http://{{ webserver_private_ip }}/worker.ign"
+  when: coreos_raw_exists.stat.exists == False
+
+- name: Unmount raw disk
+  ansible.posix.mount:
+    path: /mnt/coreos-raw
+    state: unmounted
+  become: True
+  when: coreos_raw_exists.stat.exists == False
+
+- name: Clean up mount directory
+  ansible.builtin.file:
+    path: /mnt/coreos-raw
+    state: absent
+  become: True
+  when: coreos_raw_exists.stat.exists == False
+
+##  Copy installer image to Oracle Blob bucket
+- name: Copy coreos-rawdisk.raw image to object storage for creating worker node image
+  ansible.builtin.shell: |
+    oci os object put --bucket-name {{ oci_bucket_name }} --file /tmp/coreos-rawdisk.raw
+  when: coreos_raw_exists.stat.exists == False

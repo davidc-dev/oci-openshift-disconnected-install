@@ -1,0 +1,174 @@
+## Role to configure the webserver
+
+
+- name: Install web server
+  ansible.builtin.package:
+    name: httpd
+    state: present
+  become: true
+
+- name: Enable web server
+  ansible.builtin.service:
+    name: httpd
+    enabled: true
+    state: started
+  become: true
+
+- name: Add httpd service to firewall 
+  ansible.builtin.shell: firewall-cmd --permanent --add-service=http
+  become: true
+
+- name: Reload firewall
+  ansible.builtin.command: firewall-cmd --reload
+  become: true
+
+- name: Install tar
+  ansible.builtin.package:
+    name: tar
+    state: present
+  become: true
+
+- name: Install python-pip
+  ansible.builtin.package:
+    name: python3-pip
+    state: present
+  become: true
+
+## Download and setup openshift installer
+
+- name: check if openshift-install already installed
+  stat: 
+    path: /usr/local/bin/openshift-install
+  register: ocp_install_exists
+
+- name: check if openshift client already installed
+  stat: 
+    path: /usr/local/bin/oc
+  register: ocp_client_exists
+
+- name: Make directory /tmp/openshift
+  ansible.builtin.file:
+    path: /tmp/openshift
+    state: directory
+
+- name: Download OpenShift installer for declared version
+  ansible.builtin.get_url:
+    url: https://mirror.openshift.com/pub/openshift-v4/clients/ocp/{{ ocp_version }}/openshift-install-linux.tar.gz
+    dest: /tmp/openshift/openshift-install-linux.tar.gz
+    mode: '0644'
+  when: ocp_install_exists.stat.exists == False
+
+- name: Untar downloaded installer
+  ansible.builtin.unarchive:
+    src: /tmp/openshift/openshift-install-linux.tar.gz
+    dest: /tmp/openshift
+    remote_src: true
+  when: ocp_install_exists.stat.exists == False
+
+- name: Move file to /usr/local/bin
+  ansible.builtin.copy:
+    src: /tmp/openshift/openshift-install
+    dest: /usr/local/bin/openshift-install
+    mode: '0755'
+    remote_src: true
+  become: true
+  when: ocp_install_exists.stat.exists == False
+
+
+## Download and setup OpenShift client 
+- name: Download OpenShift client for declared version
+  ansible.builtin.get_url:
+    url: https://mirror.openshift.com/pub/openshift-v4/clients/ocp/{{ ocp_version }}/openshift-client-linux.tar.gz
+    dest: /tmp/openshift/openshift-client-linux.tar.gz
+    mode: '0644'
+  when: ocp_client_exists.stat.exists == False
+
+- name: Untar download client
+  ansible.builtin.unarchive:
+    src: /tmp/openshift/openshift-client-linux.tar.gz
+    dest: /tmp/openshift
+    remote_src: true
+  when: ocp_client_exists.stat.exists == False
+
+- name: Move file to /usr/local
+  ansible.builtin.copy:
+    src: /tmp/openshift/oc
+    dest: /usr/local/bin/oc
+    mode: '0755'
+    remote_src: true
+  become: true
+  when: ocp_client_exists.stat.exists == False
+
+## Remove temporary files 
+- name: Remove /tmp/openshift directory
+  ansible.builtin.file:
+    path: /tmp/openshift
+    state: absent
+
+## Download and setup OCI client
+
+## Download and setup OpenShift client 
+- name: check if already installed file exists
+  stat: 
+    path: ~/bin/oci
+  register: oci_exists
+
+- name: Download oracle client installer
+  ansible.builtin.get_url:
+    url: https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh
+    dest: /tmp/install.sh
+    mode: '0755'
+  when: oci_exists.stat.exists == False
+
+- name: Install Oracle CLI Client
+  ansible.builtin.command: /tmp/install.sh --accept-all-defaults
+  when: oci_exists.stat.exists == False
+
+- name: Remove installer /tmp/install.sh
+  ansible.builtin.file:
+    path: /tmp/install.sh
+    state: absent
+  when: oci_exists.stat.exists == False
+
+## Create oci configuration
+- name: Create ~/.oci directory
+  ansible.builtin.file:
+    path: ~/.oci
+    state: directory
+
+- name: Create ~/.oci/config file 
+  ansible.builtin.copy:
+    dest: ~/.oci/config
+    mode: '0600'
+    content: |
+      [DEFAULT]
+      user={{ oci_user_ocid }}
+      fingerprint={{ oci_config_fingerprint }} 
+      tenancy={{ oci_tenancy_ocid }}
+      region={{ oci_region }}
+      key_file=~/.oci/ocikey.pem 
+
+- name: Create ~/.oci/ocikey.pem
+  ansible.builtin.copy:
+    dest: ~/.oci/ocikey.pem
+    mode: '0600'
+    content: |
+      {{ oci_config_privatekey_pem }}
+
+
+
+## Install yq
+- name: check if already installed file exists
+  stat: 
+    path: /usr/local/bin/yq
+  register: yq_exists
+
+- name: Install yq binary 
+  ansible.builtin.get_url:
+    url: https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+    dest: /usr/local/bin/yq
+    mode: '0755'
+  become: true
+  when: yq_exists.stat.exists == False
+
+
